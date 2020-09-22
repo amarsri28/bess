@@ -50,6 +50,8 @@
 
 #include "../debug.h"
 #include "common.h"
+#include <rte_hash.h>
+
 
 namespace bess {
 namespace utils {
@@ -74,6 +76,10 @@ typedef uint32_t EntryIndex;
 template <typename K, typename V, typename H = std::hash<K>,
           typename E = std::equal_to<K>>
 class CuckooMap {
+ private:
+ struct rte_hash_parameters param;
+ struct rte_hash *hash;
+ bool dpdk_multithread =false;
  public:
   typedef std::pair<K, V> Entry;
 
@@ -148,6 +154,15 @@ class CuckooMap {
     size_t slot_idx_;
   };
 
+  CuckooMap(void* params)
+	{
+	  rte_hash_parameters* rt = (rte_hash_parameters *) params;
+          param= *rt;
+          hash = rte_hash_create(&param);
+          if(hash==NULL)
+          throw std::exception("Rte_hash_create() failed, pls check input supplied params");
+          dpdk_multithread ==  true;
+	};
   CuckooMap(size_t reserve_buckets = kInitNumBucket,
             size_t reserve_entries = kInitNumEntries)
       : bucket_mask_(reserve_buckets - 1),
@@ -156,13 +171,14 @@ class CuckooMap {
         entries_(reserve_entries),
         free_entry_indices_() {
     // the number of buckets must be a power of 2
+   // #if ndef DPDK_CUCKOO
     CHECK_EQ(align_ceil_pow2(reserve_buckets), reserve_buckets);
 
     for (int i = reserve_entries - 1; i >= 0; --i) {
       free_entry_indices_.push(i);
     }
+    
   }
-
   // Not allowing copying for now
   CuckooMap(CuckooMap&) = delete;
   CuckooMap& operator=(CuckooMap&) = delete;
@@ -212,13 +228,28 @@ class CuckooMap {
   // not be called.
   Entry* Insert(const K& key, const V& value, const H& hasher = H(),
                 const E& eq = E()) {
-    return DoEmplace(key, hasher, eq, value);
-  }
+
+  
+      return DoEmplace(key, hasher, eq, value);
+  
+}
 
   Entry* Insert(const K& key, V&& value, const H& hasher = H(),
                 const E& eq = E()) {
-    return DoEmplace(key, hasher, eq, std::move(value));
+  if(dpdk_multithread ==  true)
+  {
+    hash_sig_t hash_value = rte_hash_hash(this->hash, &key);
+    int ret = rte_hash_add_key_with_hash_data(reinterpret_cast<rte_hash*>(hash), (const void *)&key, hash_value, (void*)&value);
+    if (ret < 0) return NULL;
+    Entry *ans = new Entry;
+    ans->first =key;
+    new (&ans->second) V(std::forward<V>(value));
+    return ans;
   }
+     return DoEmplace(key, hasher, eq, std::move(value));
+  }
+
+
 
   // Emplace/update-in-place a key value pair
   // On success returns a pointer to the inserted entry, nullptr otherwise.
@@ -233,6 +264,18 @@ class CuckooMap {
   // Return nullptr if not exist.
   Entry* Find(const K& key, const H& hasher = H(), const E& eq = E()) {
     // Blame Effective C++ for this
+    if(dpdk_multithread)
+    { 
+      void *data_h ;
+      std::pair<int,void*> st;
+      int ret = rte_hash_lookup_data(this->hash, &key, &data_h);
+      if(ret<0) return NULL;
+
+      Entry *ans = new Entry;
+      ans->first =key;
+      
+      return ans;
+    }
     return const_cast<Entry*>(
         static_cast<
             const typename std::remove_reference<decltype(*this)>::type&>(*this)
@@ -255,6 +298,13 @@ class CuckooMap {
   // Remove the stored entry by the key
   // Return false if not exist.
   bool Remove(const K& key, const H& hasher = H(), const E& eq = E()) {
+
+    if(dpdk_multithread)
+    { 
+    int ret = rte_hash_del_key(hash, &key);
+     if(ret < 0)return false;
+     else return true;
+    }
     HashResult pri = Hash(key, hasher);
     if (RemoveFromBucket(pri, pri & bucket_mask_, key, eq)) {
       return true;
@@ -286,8 +336,29 @@ class CuckooMap {
   }
 
   // Return the number of stored entries
-  size_t Count() const { return num_entries_; }
+  size_t Count() const 
+  {
+    if(dpdk_multithread)
+         return rte_hash_count(hash);
+    else 
+     return num_entries_; 
+  }
 
+  //bulk data look up bess func
+  size_t Lookup_Bulk_data(const void **keys,
+		      uint32_t num_keys, uint64_t *hit_mask, void *data[])
+ {
+   if(dpdk_multithread)
+   return rte_hash_lookup_bulk_data(hash, keys,num_keys, hit_mask, data);
+   return 0;
+ }
+//iterate for dpdk hash
+size_t Iterate(const void **key, void **data, uint32_t *next)
+{
+ if(dpdk_multithread)
+ return rte_hash_iterate(hash, key, data, next);
+ return 0;
+}
  protected:
   // Tunable macros
   static const int kInitNumBucket = 4;
