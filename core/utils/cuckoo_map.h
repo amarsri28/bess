@@ -78,7 +78,7 @@ template <typename K, typename V, typename H = std::hash<K>,
 class CuckooMap {
  private:
  struct rte_hash_parameters param;
- struct rte_hash *hash;
+ struct rte_hash *hash = nullptr;
  bool dpdk_multithread =false;
  public:
   typedef std::pair<K, V> Entry;
@@ -154,22 +154,28 @@ class CuckooMap {
     size_t slot_idx_;
   };
 
-  CuckooMap(void* params)
-	{
-	  rte_hash_parameters* rt = (rte_hash_parameters *) params;
-          param= *rt;
-          hash = rte_hash_create(&param);
-          if(hash==NULL)
-          throw std::exception("Rte_hash_create() failed, pls check input supplied params");
-          dpdk_multithread ==  true;
-	};
   CuckooMap(size_t reserve_buckets = kInitNumBucket,
-            size_t reserve_entries = kInitNumEntries)
+            size_t reserve_entries = kInitNumEntries,void* dpdk_params=0)
       : bucket_mask_(reserve_buckets - 1),
         num_entries_(0),
         buckets_(reserve_buckets),
         entries_(reserve_entries),
         free_entry_indices_() {
+ 
+        if(dpdk_params)
+         {
+          if( hash == NULL)
+          {
+         	rte_hash_parameters* rt = (rte_hash_parameters *) dpdk_params;
+          hash = rte_hash_create(rt);
+ 
+          if(hash==NULL)
+          throw std::runtime_error("DPDK rte_hash_create() returned null , cant proceed further");
+          }
+          dpdk_multithread =  true;
+         }
+         else
+         {
     // the number of buckets must be a power of 2
    // #if ndef DPDK_CUCKOO
     CHECK_EQ(align_ceil_pow2(reserve_buckets), reserve_buckets);
@@ -177,7 +183,17 @@ class CuckooMap {
     for (int i = reserve_entries - 1; i >= 0; --i) {
       free_entry_indices_.push(i);
     }
+         }
     
+  }
+
+  ~CuckooMap()
+  {
+    if(hash != nullptr)
+    {
+      rte_hash_free(hash);
+      hash=nullptr;
+    }
   }
   // Not allowing copying for now
   CuckooMap(CuckooMap&) = delete;
@@ -192,13 +208,23 @@ class CuckooMap {
 
   template <typename... Args>
   Entry* DoEmplace(const K& key, const H& hasher, const E& eq, Args&&... args) {
+       
+     if(dpdk_multithread)
+     {       
+      Entry *entry1 = new Entry;
+      new (&entry1->second) V(std::forward<Args>(args)...);
+      int ret1 = rte_hash_add_key_data(hash, get(&key),(void*)(&entry1->second));
+      if(ret1<0)return nullptr;
+      entry1->first=key;
+      return entry1;
+    }
+
     Entry* entry;
     HashResult primary = Hash(key, hasher);
-
     EntryIndex idx = FindWithHash(primary, key, eq);
     if (idx != kInvalidEntryIdx) {
       entry = &entries_[idx];
-      new (&entry->second) V(std::forward<Args>(args)...);
+     new (&entry->second) V(std::forward<Args>(args)...);
       return entry;
     }
 
@@ -219,8 +245,42 @@ class CuckooMap {
       ExpandBuckets<std::conditional_t<std::is_move_constructible<V>::value,
                                        V&&, const V&>>(hasher, eq);
     }
+  
     return entry;
   }
+
+void* get(const void* key)
+	{
+  	 uint8_t* a= 0;
+     uint16_t* b = 0;
+     uint32_t* c = 0;
+     uint64_t* d = 0;
+
+		switch (param.key_len)
+		{
+		case 1:
+			a = (uint8_t*)key;
+			return a;
+			
+		case 2:
+			b = (uint16_t*)key;
+            return b;
+			
+    case 4:
+      c = (uint32_t*)key;
+            return c;
+      
+    default:
+      if(param.key_len>=8)
+      {
+      d = (uint64_t*)key;
+            return d;
+      }
+       return 0;
+		}
+	
+	}
+
 
   // Insert/update a key value pair
   // On success returns a pointer to the inserted entry, nullptr otherwise.
@@ -229,23 +289,13 @@ class CuckooMap {
   Entry* Insert(const K& key, const V& value, const H& hasher = H(),
                 const E& eq = E()) {
 
-  
       return DoEmplace(key, hasher, eq, value);
   
 }
 
   Entry* Insert(const K& key, V&& value, const H& hasher = H(),
                 const E& eq = E()) {
-  if(dpdk_multithread ==  true)
-  {
-    hash_sig_t hash_value = rte_hash_hash(this->hash, &key);
-    int ret = rte_hash_add_key_with_hash_data(reinterpret_cast<rte_hash*>(hash), (const void *)&key, hash_value, (void*)&value);
-    if (ret < 0) return NULL;
-    Entry *ans = new Entry;
-    ans->first =key;
-    new (&ans->second) V(std::forward<V>(value));
-    return ans;
-  }
+
      return DoEmplace(key, hasher, eq, std::move(value));
   }
 
@@ -263,28 +313,30 @@ class CuckooMap {
   // Find the pointer to the stored value by the key.
   // Return nullptr if not exist.
   Entry* Find(const K& key, const H& hasher = H(), const E& eq = E()) {
-    // Blame Effective C++ for this
+      
+      
     if(dpdk_multithread)
     { 
-      void *data_h ;
-      std::pair<int,void*> st;
-      int ret = rte_hash_lookup_data(this->hash, &key, &data_h);
-      if(ret<0) return NULL;
-
-      Entry *ans = new Entry;
-      ans->first =key;
-      
-      return ans;
+       Entry *ans = new Entry;
+       V *beg;
+       int ret1 = rte_hash_lookup_data(this->hash, get(&key),(void**)&beg);
+       if(ret1<0) return NULL;
+       ans->first =key;
+       ans->second =*beg;
+       return ans;
     }
+
     return const_cast<Entry*>(
         static_cast<
-            const typename std::remove_reference<decltype(*this)>::type&>(*this)
-            .Find(key, hasher, eq));
+           const typename std::remove_reference<decltype(*this)>::type&>(*this)
+           .Find(key, hasher, eq));
+    
   }
 
   // const version of Find()
   const Entry* Find(const K& key, const H& hasher = H(),
                     const E& eq = E()) const {
+                      
     EntryIndex idx = FindWithHash(Hash(key, hasher), key, eq);
     if (idx == kInvalidEntryIdx) {
       return nullptr;
@@ -629,6 +681,9 @@ size_t Iterate(const void **key, void **data, uint32_t *next)
 
   // Stack of free entries
   std::stack<EntryIndex> free_entry_indices_;
+
+
+ 
 };
 
 }  // namespace utils

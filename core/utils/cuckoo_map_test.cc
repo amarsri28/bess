@@ -32,10 +32,34 @@
 #include <map>
 #include <unordered_map>
 #include <vector>
-
 #include <gtest/gtest.h>
-
+#include <rte_hash.h>
 #include "random.h"
+
+#include <rte_lcore.h>
+#include <dpdk.h>
+#include <rte_hash_crc.h>
+
+
+
+ struct FlowId {
+    uint32_t src_ip;
+    uint32_t dst_ip;
+    uint32_t src_port;
+    uint32_t dst_port;
+    uint8_t protocol;
+  };
+struct rte_hash_parameters session_map_params = {
+      .name= "test1",
+      .entries = 16,
+      .reserved = 0,
+      .key_len = sizeof(int),
+      .hash_func =rte_hash_crc,
+      .hash_func_init_val = 0,
+      .socket_id = 0,
+      .extra_flag = RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY};
+      
+      
 
 struct CopyConstructorOnly {
   // FIXME: CuckooMap should work without this default constructor
@@ -86,9 +110,45 @@ struct std::hash<MoveConstructorOnly> {
 namespace {
 
 using bess::utils::CuckooMap;
+  
+//dpdk Test Insert func
+TEST(CuckooMapTest, Insert) {
+  int p=9;
+  bess::InitDpdk(0); 
+  CuckooMap<uint32_t, uint16_t> Dpdk_Cuckoo(0,0,&session_map_params);
+ 
+  auto *entry = Dpdk_Cuckoo.Insert(11,p);
+  EXPECT_EQ(11, entry->first);
+  
+  auto *entry1 = Dpdk_Cuckoo.Find(11);
+ 	ASSERT_NE(nullptr, entry1);
+  EXPECT_EQ(11, entry1->first);
+  EXPECT_EQ(9, entry1->second);
+  entry = Dpdk_Cuckoo.Find(11);
+  EXPECT_EQ(9, entry->second);
+
+  auto *entry77 = Dpdk_Cuckoo.Insert(45,p);//val1);
+   EXPECT_EQ(9, entry77->second);
+  
+}
+
+TEST(CuckooMapTest, Find) {
+  CuckooMap<uint32_t, uint16_t> cuckoo(0,0,&session_map_params);
+  auto *entry = cuckoo.Insert(1, 99);
+  ASSERT_NE(nullptr, entry);
+  cuckoo.Insert(2, 99);
+  EXPECT_EQ(entry->second, 99);
+  EXPECT_EQ(cuckoo.Find(2)->second, 99);
+  auto *entry1 = cuckoo.Find(1);
+  ASSERT_NE(nullptr, entry1);
+  cuckoo.Insert(1, 2);
+  EXPECT_EQ(cuckoo.Find(1)->second, 2);
+  EXPECT_EQ(cuckoo.Find(3), nullptr);
+  EXPECT_EQ(cuckoo.Find(4), nullptr);
+}
 
 // Test Insert function
-TEST(CuckooMapTest, Insert) {
+TEST(CuckooMapTest, DpdkInsert) {
   CuckooMap<uint32_t, uint16_t> cuckoo;
   EXPECT_EQ(cuckoo.Insert(1, 99)->second, 99);
   EXPECT_EQ(cuckoo.Insert(2, 98)->second, 98);
@@ -120,17 +180,6 @@ TEST(CuckooMap, TypeSupport) {
   CompileTimeInstantiation<MoveConstructorOnly>();
 }
 
-// Test insertion with copy
-TEST(CuckooMapTest, CopyInsert) {
-  CuckooMap<uint32_t, CopyConstructorOnly> cuckoo;
-  auto expected = CopyConstructorOnly(1, 2);
-  auto *entry = cuckoo.Insert(10, expected);
-  ASSERT_NE(nullptr, entry);
-  const auto &x = entry->second;
-  EXPECT_EQ(1, x.a);
-  EXPECT_EQ(2, x.b);
-}
-
 // Test insertion with move
 TEST(CuckooMapTest, MoveInsert) {
   CuckooMap<uint32_t, MoveConstructorOnly> cuckoo;
@@ -141,6 +190,21 @@ TEST(CuckooMapTest, MoveInsert) {
   EXPECT_EQ(3, x.a);
   EXPECT_EQ(4, x.b);
 }
+// Test insertion with copy
+TEST(CuckooMapTest, CopyInsert) {
+ 
+  bess::InitDpdk(0); 
+  CuckooMap<uint32_t, CopyConstructorOnly> cuckoo(0,0,&session_map_params);
+  auto expected = CopyConstructorOnly(1, 2);
+  auto *entry = cuckoo.Insert(10, expected);
+
+  ASSERT_NE(nullptr, entry);
+  const auto &x = entry->second;
+  EXPECT_EQ(1, x.a);
+  EXPECT_EQ(2, x.b);
+}
+
+
 
 // Test Emplace function
 TEST(CuckooMapTest, Emplace) {
@@ -153,21 +217,7 @@ TEST(CuckooMapTest, Emplace) {
 }
 
 // Test Find function
-TEST(CuckooMapTest, Find) {
-  CuckooMap<uint32_t, uint16_t> cuckoo;
 
-  cuckoo.Insert(1, 99);
-  cuckoo.Insert(2, 99);
-
-  EXPECT_EQ(cuckoo.Find(1)->second, 99);
-  EXPECT_EQ(cuckoo.Find(2)->second, 99);
-
-  cuckoo.Insert(1, 2);
-  EXPECT_EQ(cuckoo.Find(1)->second, 2);
-
-  EXPECT_EQ(cuckoo.Find(3), nullptr);
-  EXPECT_EQ(cuckoo.Find(4), nullptr);
-}
 
 // Test Remove function
 TEST(CuckooMapTest, Remove) {
