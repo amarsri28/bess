@@ -46,10 +46,22 @@
 
 #include "common.h"
 #include "random.h"
+#include "rte_lcore.h"
+#include "dpdk.h"
+#include <rte_hash_crc.h>
 
 using bess::utils::CuckooMap;
 
 typedef uint16_t value_t;
+struct rte_hash_parameters session_map_params = {
+      .name= "test1",
+      .entries = 16,
+      .reserved = 0,
+      .key_len = sizeof(uint32_t),
+      .hash_func =rte_hash_crc,
+      .hash_func_init_val = 0,
+      .socket_id = 0,
+      .extra_flag = RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY};
 
 static inline value_t derive_val(uint32_t key) {
   return (value_t)(key + 3);
@@ -63,8 +75,9 @@ class CuckooMapFixture : public benchmark::Fixture {
   CuckooMapFixture() : cuckoo_(), stl_map_() {}
 
   virtual void SetUp(benchmark::State &state) {
+    bess::InitDpdk(0); 
     stl_map_ = new std::unordered_map<uint32_t, value_t>();
-    cuckoo_ = new CuckooMap<uint32_t, value_t>();
+    cuckoo_ = new CuckooMap<uint32_t, value_t>(0,0,&session_map_params);
 
     rng.SetSeed(0);
 

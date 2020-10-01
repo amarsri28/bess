@@ -77,9 +77,9 @@ template <typename K, typename V, typename H = std::hash<K>,
           typename E = std::equal_to<K>>
 class CuckooMap {
  private:
- struct rte_hash_parameters param;
  struct rte_hash *hash = nullptr;
- bool dpdk_multithread =false;
+ bool IsDpdk =false;
+ uint32_t key_len =0;
  public:
   typedef std::pair<K, V> Entry;
 
@@ -167,12 +167,13 @@ class CuckooMap {
           if( hash == NULL)
           {
          	rte_hash_parameters* rt = (rte_hash_parameters *) dpdk_params;
+          key_len = rt->key_len;
           hash = rte_hash_create(rt);
  
           if(hash==NULL)
           throw std::runtime_error("DPDK rte_hash_create() returned null , cant proceed further");
           }
-          dpdk_multithread =  true;
+          IsDpdk =  true;
          }
          else
          {
@@ -209,7 +210,7 @@ class CuckooMap {
   template <typename... Args>
   Entry* DoEmplace(const K& key, const H& hasher, const E& eq, Args&&... args) {
        
-     if(dpdk_multithread)
+     if(IsDpdk)
      {       
       Entry *entry1 = new Entry;
       new (&entry1->second) V(std::forward<Args>(args)...);
@@ -249,18 +250,18 @@ class CuckooMap {
     return entry;
   }
 
-void* get(const void* key)
+ void* get(const void* key)const
 	{
   	 uint8_t* a= 0;
-     uint16_t* b = 0;
-     uint32_t* c = 0;
-     uint64_t* d = 0;
+      uint16_t* b = 0;
+      uint32_t* c = 0;
+      uint64_t* d = 0;
 
-		switch (param.key_len)
+		switch (key_len)
 		{
 		case 1:
 			a = (uint8_t*)key;
-			return a;
+     	return a;
 			
 		case 2:
 			b = (uint16_t*)key;
@@ -271,7 +272,7 @@ void* get(const void* key)
             return c;
       
     default:
-      if(param.key_len>=8)
+      if(key_len>=8)
       {
       d = (uint64_t*)key;
             return d;
@@ -313,30 +314,28 @@ void* get(const void* key)
   // Find the pointer to the stored value by the key.
   // Return nullptr if not exist.
   Entry* Find(const K& key, const H& hasher = H(), const E& eq = E()) {
-      
-      
-    if(dpdk_multithread)
-    { 
-       Entry *ans = new Entry;
-       V *beg;
-       int ret1 = rte_hash_lookup_data(this->hash, get(&key),(void**)&beg);
-       if(ret1<0) return NULL;
-       ans->first =key;
-       ans->second =*beg;
-       return ans;
-    }
 
     return const_cast<Entry*>(
         static_cast<
            const typename std::remove_reference<decltype(*this)>::type&>(*this)
-           .Find(key, hasher, eq));
+           .Find((key), hasher, eq));
     
   }
 
   // const version of Find()
   const Entry* Find(const K& key, const H& hasher = H(),
                     const E& eq = E()) const {
-                      
+
+    if(IsDpdk)
+     {
+       Entry* ans = new Entry;
+       V* data;
+       int ret = rte_hash_lookup_data(hash, get(&key),(void**)&data);
+       if(ret<0) return NULL;
+       ans->first =key;
+       ans->second =*data;
+       return ans;
+      }
     EntryIndex idx = FindWithHash(Hash(key, hasher), key, eq);
     if (idx == kInvalidEntryIdx) {
       return nullptr;
@@ -351,7 +350,7 @@ void* get(const void* key)
   // Return false if not exist.
   bool Remove(const K& key, const H& hasher = H(), const E& eq = E()) {
 
-    if(dpdk_multithread)
+    if(IsDpdk)
     { 
     int ret = rte_hash_del_key(hash, &key);
      if(ret < 0)return false;
@@ -369,6 +368,8 @@ void* get(const void* key)
   }
 
   void Clear() {
+
+    if(IsDpdk) return;
     buckets_.clear();
     entries_.clear();
 
@@ -390,7 +391,7 @@ void* get(const void* key)
   // Return the number of stored entries
   size_t Count() const 
   {
-    if(dpdk_multithread)
+    if(IsDpdk)
          return rte_hash_count(hash);
     else 
      return num_entries_; 
@@ -400,14 +401,14 @@ void* get(const void* key)
   size_t Lookup_Bulk_data(const void **keys,
 		      uint32_t num_keys, uint64_t *hit_mask, void *data[])
  {
-   if(dpdk_multithread)
+   if(IsDpdk)
    return rte_hash_lookup_bulk_data(hash, keys,num_keys, hit_mask, data);
    return 0;
  }
 //iterate for dpdk hash
 size_t Iterate(const void **key, void **data, uint32_t *next)
 {
- if(dpdk_multithread)
+ if(IsDpdk)
  return rte_hash_iterate(hash, key, data, next);
  return 0;
 }

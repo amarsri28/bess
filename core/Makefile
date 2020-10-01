@@ -61,7 +61,7 @@ endif
 
 HAS_PKG_CONFIG := $(shell command -v $(PKG_CONFIG) 2>&1 >/dev/null && echo yes || echo no)
 
-RTE_SDK ?= $(abspath ../deps/dpdk-19.11.3)
+RTE_SDK ?= $(abspath ../deps/dpdk-19.11.4)
 RTE_TARGET ?= $(shell uname -m)-native-linuxapp-gcc
 DPDK_LIB ?= dpdk
 
@@ -109,7 +109,7 @@ endif
 # -MMD dependency recording (should we use -MD?).
 COREDIR := $(abspath .)
 CPU ?= native
-CXXFLAGS += -std=c++17 -g3 -O0 -ggdb3 -march=$(CPU) \
+CXXFLAGS += -std=c++17 -g3 -ggdb3 -march=$(CPU) \
             -isystem $(DPDK_INC_DIR) -isystem $(COREDIR) \
             -isystem $(dir $<).. -isystem $(COREDIR)/modules \
             -D_GNU_SOURCE \
@@ -118,19 +118,19 @@ CXXFLAGS += -std=c++17 -g3 -O0 -ggdb3 -march=$(CPU) \
             $(PKG_CFLAGS)
 
 ifeq "$(shell test $(CXXVERSION) -ge 9; echo $$?)" "0"
-  CXXFLAGS += -O0 -Wno-error=address-of-packed-member
+  CXXFLAGS += -Wno-error=address-of-packed-member
 endif
 
 PERMISSIVE := -Wno-unused-parameter -Wno-missing-field-initializers
 
 # -Wshadow should not be used for g++ 4.x, as it has too many false positives
 ifeq "$(shell expr $(CXXCOMPILER) = g++ \& $(CXXVERSION) \< 50000)" "0"
-  CXXFLAGS += -Wshadow -O0
+  CXXFLAGS += -Wshadow
 endif
 
 # Disable GNU_UNIQUE symbol for g++
 ifeq "$(shell expr $(CXXCOMPILER) = g++)" "1"
-  CXXFLAGS += -fno-gnu-unique -O0
+  CXXFLAGS += -fno-gnu-unique
 endif
 
 LDFLAGS += -rdynamic -L$(DPDK_LIB_DIR) -Wl,-rpath=$(DPDK_LIB_DIR) -pthread
@@ -165,7 +165,7 @@ LIBS += -Wl,-non_shared \
         $(ALWAYS_DYN_LIBS)
 
 ifdef SANITIZE
-  CXXFLAGS += -fsanitize=address -fsanitize=undefined -fno-omit-frame-pointer -O0
+  CXXFLAGS += -fsanitize=address -fsanitize=undefined -fno-omit-frame-pointer
   LDFLAGS += -fsanitize=address -fsanitize=undefined
 endif
 
@@ -175,7 +175,7 @@ ifdef COVERAGE
 else ifdef DEBUG
   CXXFLAGS += -O0
 else
-  CXXFLAGS += -O0 -DNDEBUG
+  CXXFLAGS += -O3 -DNDEBUG
 endif
 
 # Unless we explicitly specify a default goal, the first target in the
