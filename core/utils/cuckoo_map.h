@@ -214,7 +214,7 @@ class CuckooMap {
      {       
       Entry *entry1 = new Entry;
       new (&entry1->second) V(std::forward<Args>(args)...);
-      int ret1 = rte_hash_add_key_data(hash, get(&key),(void*)(&entry1->second));
+      int ret1 = rte_hash_add_key_data(hash, &key,(void*)(&entry1->second));
       if(ret1<0)return nullptr;
       entry1->first=key;
       return entry1;
@@ -250,39 +250,7 @@ class CuckooMap {
     return entry;
   }
 
- void* get(const void* key)const
-	{
-  	 uint8_t* a= 0;
-      uint16_t* b = 0;
-      uint32_t* c = 0;
-      uint64_t* d = 0;
-
-		switch (key_len)
-		{
-		case 1:
-			a = (uint8_t*)key;
-     	return a;
-			
-		case 2:
-			b = (uint16_t*)key;
-            return b;
-			
-    case 4:
-      c = (uint32_t*)key;
-            return c;
-      
-    default:
-      if(key_len>=8)
-      {
-      d = (uint64_t*)key;
-            return d;
-      }
-       return 0;
-		}
-	
-	}
-
-
+ 
   // Insert/update a key value pair
   // On success returns a pointer to the inserted entry, nullptr otherwise.
   // NOTE: when Insert() returns nullptr, the copy/move constructor of `V` may
@@ -300,6 +268,41 @@ class CuckooMap {
      return DoEmplace(key, hasher, eq, std::move(value));
   }
 
+int Insert_dpdk(const void *key, void *data=0, hash_sig_t sig=0)
+ {
+   if(IsDpdk)
+     {       
+        if(data && !sig)
+        {
+         return rte_hash_add_key_data(hash, key, data);
+        }
+        if(data &&sig)
+        {
+          return rte_hash_add_key_with_hash_data(hash,key, sig, data);
+        }
+        if (!data && !sig)
+        {
+        return rte_hash_add_key(hash, key);
+        }
+     }
+    return -1; 
+}
+
+int Find_dpdk(const void *key, void **data=0, hash_sig_t sig=0)/*(const K& key, void* out) */
+{
+if(IsDpdk )
+  {
+  if(data && !sig)
+     return rte_hash_lookup_data(hash, key, data);
+  if(data && sig)
+     return rte_hash_lookup_with_hash_data(hash,key, sig, data);
+  if(!data && !sig)
+      return rte_hash_lookup(hash, key);
+  if(!data && sig)
+      return rte_hash_lookup_with_hash(hash,key,sig);
+ }
+      return -1;
+}
 
 
   // Emplace/update-in-place a key value pair
@@ -330,7 +333,7 @@ class CuckooMap {
      {
        Entry* ans = new Entry;
        V* data;
-       int ret = rte_hash_lookup_data(hash, get(&key),(void**)&data);
+       int ret = rte_hash_lookup_data(hash, &key,(void**)&data);
        if(ret<0) return NULL;
        ans->first =key;
        ans->second =*data;
