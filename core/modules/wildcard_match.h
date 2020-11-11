@@ -58,7 +58,6 @@ struct WmData {
   int priority;
   gate_idx_t ogate;
 };
-
 struct WmField {
   int attr_id; /* -1 for offset-based fields */
 
@@ -130,12 +129,27 @@ class wm_hash {
 
 class WildcardMatch final : public Module {
  public:
+ struct rte_hash_parameters dpdk_params1{
+      .name= "test2",
+      .entries = 1<<20,
+      .reserved = 0,
+      .key_len = sizeof(wm_hkey_t),
+      .hash_func = rte_hash_crc,
+      .hash_func_init_val = 0,
+      .socket_id = 0,
+      .extra_flag = RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY};
+
   static const gate_idx_t kNumOGates = MAX_GATES;
 
   static const Commands cmds;
 
   WildcardMatch()
-      : Module(), default_gate_(), total_key_size_(), fields_(), tuples_() {
+      : Module(),
+        default_gate_(),
+        total_key_size_(),
+        fields_(),
+        tuples_() {
+          CuckooMap<wm_hkey_t, struct WmData, wm_hash, wm_eq>ht (0,0,&dpdk_params1);
     max_allowed_workers_ = Worker::kMaxWorkers;
   }
 
@@ -154,8 +168,11 @@ class WildcardMatch final : public Module {
   CommandResponse CommandClear(const bess::pb::EmptyArg &arg);
   CommandResponse CommandSetDefaultGate(
       const bess::pb::WildcardMatchCommandSetDefaultGateArg &arg);
+   void Initkeys(wm_hkey_t *keys);
 
  private:
+ 
+
   struct WmTuple {
     CuckooMap<wm_hkey_t, struct WmData, wm_hash, wm_eq> ht;
     wm_hkey_t mask;
@@ -176,7 +193,7 @@ class WildcardMatch final : public Module {
 
   gate_idx_t default_gate_;
 
-  size_t total_key_size_; /* a multiple of sizeof(uint64_t) */
+  size_t total_key_size_;   /* a multiple of sizeof(uint64_t) */
 
   // TODO(melvinw): this can be refactored to use ExactMatchTable
   std::vector<struct WmField> fields_;

@@ -51,7 +51,7 @@
 #include "../debug.h"
 #include "common.h"
 #include <rte_hash.h>
-
+#include <iostream>
 
 namespace bess {
 namespace utils {
@@ -80,6 +80,7 @@ class CuckooMap {
  struct rte_hash *hash = nullptr;
  bool IsDpdk =false;
  uint32_t key_len =0;
+ rte_hash_parameters rt;
  public:
   typedef std::pair<K, V> Entry;
 
@@ -166,9 +167,9 @@ class CuckooMap {
          {
           if( hash == NULL)
           {
-         	rte_hash_parameters* rt = (rte_hash_parameters *) dpdk_params;
-          key_len = rt->key_len;
-          hash = rte_hash_create(rt);
+         	rt = *((rte_hash_parameters *) dpdk_params);
+          key_len = rt.key_len;
+          hash = rte_hash_create(&rt);
  
           if(hash==NULL)
           throw std::runtime_error("DPDK rte_hash_create() returned null , cant proceed further");
@@ -270,7 +271,8 @@ class CuckooMap {
 
 int Insert_dpdk(const void *key, void *data=0, hash_sig_t sig=0)
  {
-   if(IsDpdk)
+   std::cout << "Insert"<< " key0="<<*(uint64_t*)key << " key1="<< *((uint64_t*)key+1)<< " key2="<<*((uint64_t*)key+2) << " key3="<<*((uint64_t*)key+3) << " key4="<< *((uint64_t*)key+4) << " key5="<< *((uint64_t*)key+5) << " key6="<<*((uint64_t*)key+6) << " key7="<<*((uint64_t*)key+7) << std::endl;
+    if(IsDpdk)
      {       
         if(data && !sig)
         {
@@ -304,6 +306,22 @@ if(IsDpdk )
       return -1;
 }
 
+ int Find_dpdk(const void *key, void **data=0, hash_sig_t sig=0) const /*(const K& key, void* out) */
+{
+ 
+ if(IsDpdk )
+  {
+  if(data && !sig)
+     return rte_hash_lookup_data(hash, key, data);
+  if(data && sig)
+     return rte_hash_lookup_with_hash_data(hash,key, sig, data);
+  if(!data && !sig)
+      return rte_hash_lookup(hash, key);
+  if(!data && sig)
+      return rte_hash_lookup_with_hash(hash,key,sig);
+ }
+      return -1;
+}
 
   // Emplace/update-in-place a key value pair
   // On success returns a pointer to the inserted entry, nullptr otherwise.
@@ -372,7 +390,18 @@ if(IsDpdk )
 
   void Clear() {
 
-    if(IsDpdk) return;
+    if(IsDpdk) 
+    {
+     if(hash)
+      {
+         rte_hash_free(hash);
+         hash=nullptr;
+         hash = rte_hash_create(&rt);
+         if(hash == NULL)
+           throw std::runtime_error("DPDK rte_hash_create() returned null , cant proceed further");
+      }
+    return;
+    }
     buckets_.clear();
     entries_.clear();
 

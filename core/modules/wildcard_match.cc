@@ -55,6 +55,22 @@ static inline int is_valid_gate(gate_idx_t gate) {
   return (gate < MAX_GATES || gate == DROP_GATE);
 }
 
+
+void WildcardMatch::Initkeys(wm_hkey_t *keys)//,size_t key_size)
+  {
+    int i = sizeof(wm_hkey_t) - WildcardMatch::total_key_size_;
+    if(i)
+    {
+      int j = i/sizeof(keys->u64_arr[0]);
+      int total_size =  sizeof(wm_hkey_t)/sizeof(keys->u64_arr[0]);
+      for(int i= total_size -j; i<total_size;i++)
+      {
+        keys->u64_arr[i] = 0;
+      }
+    }
+  }
+
+
 const Commands WildcardMatch::cmds = {
     {"get_initial_arg", "EmptyArg",
      MODULE_CMD_FUNC(&WildcardMatch::GetInitialArg), Command::THREAD_SAFE},
@@ -144,12 +160,16 @@ inline gate_idx_t WildcardMatch::LookupEntry(const wm_hkey_t &key,
     wm_hkey_t key_masked;
 
     mask(&key_masked, key, tuple.mask, total_key_size_);
-
-    const auto *entry =
-        ht.Find(key_masked, wm_hash(total_key_size_), wm_eq(total_key_size_));
-
-    if (entry && entry->second.priority >= result.priority) {
-      result = entry->second;
+      WmData* entry;
+      Initkeys(&key_masked);
+      int ret = ht.Find_dpdk(&key_masked,((void**)&entry) );  
+      if(ret <0)
+      {
+        std::cout <<"Find_dpdk failed" <<std::endl;
+       return ret;
+      }
+    if (entry && entry->priority >= result.priority) {
+      result = *entry;
     }
   }
 
@@ -301,9 +321,12 @@ int WildcardMatch::AddTuple(wm_hkey_t *mask) {
 
 int WildcardMatch::DelEntry(int idx, wm_hkey_t *key) {
   struct WmTuple &tuple = tuples_[idx];
+  
+  Initkeys(key);
   int ret =
       tuple.ht.Remove(*key, wm_hash(total_key_size_), wm_eq(total_key_size_));
-  if (ret) {
+  if (!ret) {
+    std::cout<<"Remove failed" << std::endl;
     return ret;
   }
 
@@ -343,12 +366,16 @@ CommandResponse WildcardMatch::CommandAdd(
       return CommandFailure(-idx, "failed to add a new wildcard pattern");
     }
   }
+  Initkeys(&key);
+    struct WmData* data_t = new (WmData);
+    data_t = &data;
 
-  auto *ret = tuples_[idx].ht.Insert(key, data, wm_hash(total_key_size_),
-                                     wm_eq(total_key_size_));
-  if (ret == nullptr) {
+    int ret = tuples_[idx].ht.Insert_dpdk(&key, data_t);//, wm_hash(total_key_size_),
+
+    if (ret <0) 
+    {
     return CommandFailure(EINVAL, "failed to add a rule");
-  }
+    }
 
   return CommandSuccess();
 }

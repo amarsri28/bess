@@ -59,6 +59,8 @@ static_assert(MAX_FIELD_SIZE <= sizeof(uint64_t),
 #error this code assumes little endian architecture (x86)
 #endif
 
+
+
 namespace bess {
 namespace utils {
 
@@ -72,12 +74,16 @@ struct ExactMatchKey {
   uint64_t u64_arr[MAX_FIELDS];
 };
 
+    
+
+
 // Equality operator for two ExactMatchKeys
 class ExactMatchKeyEq {
  public:
   explicit ExactMatchKeyEq(size_t len) : len_(len) {}
 
   bool operator()(const ExactMatchKey &lhs, const ExactMatchKey &rhs) const {
+    std::cout<< "ExactMatchkeyEq" << std::endl;
     promise(len_ >= sizeof(uint64_t));
     promise(len_ <= sizeof(ExactMatchKey));
 
@@ -98,9 +104,10 @@ class ExactMatchKeyHash {
  public:
   explicit ExactMatchKeyHash(size_t len) : len_(len) {}
 
-  HashResult operator()(const ExactMatchKey &key) const {
+  
+   HashResult operator()(const ExactMatchKey &key) const {
     HashResult init_val = 0;
-
+     std::cout<< "ExactMatchkeyHash" << std::endl;
     promise(len_ >= sizeof(uint64_t));
     promise(len_ <= sizeof(ExactMatchKey));
 
@@ -113,10 +120,11 @@ class ExactMatchKeyHash {
     return rte_hash_crc(&key, len_, init_val);
 #endif
   }
-
+  
  private:
   size_t len_;
 };
+
 
 // ExactMatchField describes a field to be matched on.
 // These should only be manually created when calling
@@ -155,15 +163,44 @@ typedef std::vector<std::vector<uint8_t>> ExactMatchRuleFields;
 template <typename T>
 class ExactMatchTable {
  public:
+ struct rte_hash_parameters dpdk_params 
+ {
+      .name= "test1",
+      .entries = 1<<20,
+      .reserved = 0,
+      .key_len = sizeof(ExactMatchKey),
+      .hash_func = rte_hash_crc,
+      .hash_func_init_val = 0,
+      .socket_id = 0,
+      .extra_flag = RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY};
+
+
   using EmTable =
-      CuckooMap<ExactMatchKey, T, ExactMatchKeyHash, ExactMatchKeyEq>;
+      CuckooMap<ExactMatchKey, T, ExactMatchKeyHash, ExactMatchKeyEq> ;
+                        
 
   ExactMatchTable()
       : raw_key_size_(),
         total_key_size_(),
         num_fields_(),
         fields_(),
-        table_() {}
+        table_(0,0,&dpdk_params) 
+        { }
+
+
+ void Initkeys(ExactMatchKey *keys)
+  {
+    int i = sizeof(ExactMatchKey) - total_key_size_;
+    if(i)
+    {
+      int j = i/sizeof(keys->u64_arr[0]);
+      int total_size =  sizeof(ExactMatchKey)/sizeof(keys->u64_arr[0]);
+      for(int i= total_size -j; i<total_size;i++)
+      {
+         keys->u64_arr[i] = 0;
+      }
+    }
+  }
 
   // Add a new rule.
   //
@@ -183,10 +220,12 @@ class ExactMatchTable {
     if ((err = gather_key(fields, &key)).first != 0) {
       return err;
     }
+     Initkeys(&key);
+     const void* Key_t = (const void*)&key;
+    T* val_t = new T(val);
 
-    table_.Insert(key, val, ExactMatchKeyHash(total_key_size_),
-                  ExactMatchKeyEq(total_key_size_));
-
+    table_.Insert_dpdk(Key_t, val_t);
+          
     return MakeError(0);
   }
 
@@ -206,7 +245,8 @@ class ExactMatchTable {
     if ((err = gather_key(fields, &key)).first != 0) {
       return err;
     }
-
+    Initkeys(&key);
+     
     bool ret = table_.Remove(key, ExactMatchKeyHash(total_key_size_),
                              ExactMatchKeyEq(total_key_size_));
     if (!ret) {
@@ -272,9 +312,20 @@ class ExactMatchTable {
   // Returns the value if `key` matches a rule, otherwise `default_value`.
   T Find(const ExactMatchKey &key, const T &default_value) const {
     const auto &table = table_;
-    const auto *entry = table.Find(key, ExactMatchKeyHash(total_key_size_),
-                                   ExactMatchKeyEq(total_key_size_));
-    return entry ? entry->second : default_value;
+
+    ExactMatchKey &t1 = const_cast<ExactMatchKey&>(key) ;
+
+    const_cast<ExactMatchTable *>(this)->Initkeys(&t1); 
+    void *data = nullptr;
+       std::cout << "find 0" << "key 0 =" << key.u64_arr[0]<< " key 1 =" <<key.u64_arr[1] <<  " key 2 =" <<key.u64_arr[2] << " key 3 =" <<key.u64_arr[3] <<" key 4 =" <<key.u64_arr[4] <<" key 5 =" <<key.u64_arr[5] <<" key 6 =" <<key.u64_arr[6]  <<" key 7=" <<key.u64_arr[7] <<std::endl;
+ 
+   table.Find_dpdk( &key,&data); 
+    if(data)
+    {
+    T data_t = *((T*)data) ;
+    return data_t;
+    }
+    else return default_value;
   }
 
   // Find entries for `n` `keys` in the table and store their values in in
@@ -283,11 +334,29 @@ class ExactMatchTable {
   void Find(const ExactMatchKey *keys, T *vals, size_t n,
             T default_value) const {
     const auto &table = table_;
-    for (size_t i = 0; i < n; i++) {
-      const auto *entry =
-          table.Find(keys[i], ExactMatchKeyHash(total_key_size_),
-                     ExactMatchKeyEq(total_key_size_));
-      vals[i] = entry ? entry->second : default_value;
+    uint64_t *hit_mask;
+    int num =0;
+
+    for (size_t i = 0; i < n; i=i+32) {
+    num= (n-i >= 32) ?32:n-i;
+    
+    for(int h=0;h<num;h++)
+    {
+    Initkeys(&keys[h]);
+    }
+    void* k = &keys[i];
+    int ans = table.Lookup_Bulk_data(&k,num, hit_mask, &vals[i]);
+     if(ans != num)
+     {
+       for (int k = 0; k < num; k++) {
+					if ((*hit_mask & (1ULL << k))  == 0) 
+           {
+					vals[k]= default_value;
+					}
+          }
+      
+     }
+     
     }
   }
 
